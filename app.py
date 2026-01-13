@@ -5,6 +5,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Finance KPI Dashboard", layout="wide")
+
+# ---- prevents Streamlit Cloud header from clipping the title ----
+st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
+
 st.title("Finance KPI Dashboard")
 
 # ---- light UI polish (safe) ----
@@ -39,10 +43,6 @@ def build_pdf_bytes(
     insights_text: str,
     wf_month: str | None,
 ):
-    """
-    Build a simple PDF executive summary using reportlab (if installed).
-    Returns PDF bytes, or None if reportlab isn't available.
-    """
     try:
         from reportlab.lib.pagesizes import LETTER
         from reportlab.lib.units import inch
@@ -91,7 +91,6 @@ def build_pdf_bytes(
     y -= 0.25 * inch
 
     c.setFont("Helvetica", 10)
-    # basic wrap
     words = insights_text.split()
     line = ""
     max_chars = 95
@@ -112,7 +111,6 @@ def build_pdf_bytes(
 
     c.showPage()
     c.save()
-
     buf.seek(0)
     return buf.getvalue()
 
@@ -165,6 +163,10 @@ try:
         & (budget_view["Date"].dt.date <= end_date)
     ].copy()
 
+    # ---- helpful flags for empty-state behavior ----
+    has_revenue = (actuals_view["Account"] == "Revenue").any()
+    has_cogs = (actuals_view["Account"] == "COGS").any()
+
     # -------------------------
     # KPIs (Actual + Budget + Deltas)
     # -------------------------
@@ -192,9 +194,16 @@ try:
     d_opex_good = -d_opex  # savings positive
 
     kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-    kpi1.metric("Revenue", f"${act_revenue:,.0f}", delta=f"${d_revenue:,.0f}")
-    kpi2.metric("Gross Margin", f"${act_gross_margin:,.0f}", delta=f"${d_gm:,.0f}")
-    kpi3.metric("Gross Margin %", f"{act_gm_pct:.1%}", delta=f"{d_gm_pct_pp:+.1f} pp")
+
+    if has_revenue:
+        kpi1.metric("Revenue", f"${act_revenue:,.0f}", delta=f"${d_revenue:,.0f}")
+        kpi2.metric("Gross Margin", f"${act_gross_margin:,.0f}", delta=f"${d_gm:,.0f}")
+        kpi3.metric("Gross Margin %", f"{act_gm_pct:.1%}", delta=f"{d_gm_pct_pp:+.1f} pp")
+    else:
+        kpi1.metric("Revenue", "$0", delta="$0")
+        kpi2.metric("Gross Margin", "$0", delta="$0")
+        kpi3.metric("Gross Margin %", "N/A", delta="")
+
     kpi4.metric(
         "Operating Expenses",
         f"${act_opex:,.0f}",
@@ -216,15 +225,16 @@ try:
     else:
         insights.append("Net income finished in line with budget.")
 
-    if d_revenue < 0:
-        insights.append("Revenue came in below plan.")
-    elif d_revenue > 0:
-        insights.append("Revenue exceeded plan.")
+    if has_revenue:
+        if d_revenue < 0:
+            insights.append("Revenue came in below plan.")
+        elif d_revenue > 0:
+            insights.append("Revenue exceeded plan.")
 
-    if d_gm_pct_pp > 0:
-        insights.append(f"Gross margin rate improved by {d_gm_pct_pp:.1f} pp.")
-    elif d_gm_pct_pp < 0:
-        insights.append(f"Gross margin rate declined by {abs(d_gm_pct_pp):.1f} pp.")
+        if d_gm_pct_pp > 0:
+            insights.append(f"Gross margin rate improved by {d_gm_pct_pp:.1f} pp.")
+        elif d_gm_pct_pp < 0:
+            insights.append(f"Gross margin rate declined by {abs(d_gm_pct_pp):.1f} pp.")
 
     if d_opex_good < 0:
         insights.append(f"Operating expenses were ${abs(d_opex_good):,.0f} higher than budget.")
@@ -242,65 +252,74 @@ try:
     with tab1:
         st.subheader("Trends")
 
-        actuals_month = actuals_view.copy()
-        actuals_month["Month"] = actuals_month["Date"].dt.to_period("M").dt.to_timestamp()
+        if not has_revenue:
+            st.info("This selection is a cost center (no revenue). Trends for Revenue and Gross Margin are not applicable.")
+        else:
+            actuals_month = actuals_view.copy()
+            actuals_month["Month"] = actuals_month["Date"].dt.to_period("M").dt.to_timestamp()
 
-        rev_m = (
-            actuals_month.loc[actuals_month["Account"] == "Revenue"]
-            .groupby("Month")["Amount"]
-            .sum()
-        )
-        cogs_m = (
-            actuals_month.loc[actuals_month["Account"] == "COGS"]
-            .groupby("Month")["Amount"]
-            .sum()
-        )
-
-        trend_df = pd.DataFrame({"Revenue": rev_m, "COGS": cogs_m}).fillna(0).sort_index()
-        trend_df["GrossMargin"] = trend_df["Revenue"] + trend_df["COGS"]
-        trend_df["GrossMarginPct"] = trend_df.apply(
-            lambda r: (r["GrossMargin"] / r["Revenue"]) if r["Revenue"] != 0 else 0, axis=1
-        )
-        trend_df = trend_df.reset_index()
-
-        left, right = st.columns([2, 1])
-        with left:
-            st.plotly_chart(
-                px.line(trend_df, x="Month", y="Revenue", title="Revenue by Month"),
-                use_container_width=True,
+            rev_m = (
+                actuals_month.loc[actuals_month["Account"] == "Revenue"]
+                .groupby("Month")["Amount"]
+                .sum()
             )
-        with right:
-            fig = px.line(trend_df, x="Month", y="GrossMarginPct", title="Gross Margin %")
-            fig.update_yaxes(tickformat=".0%")
-            st.plotly_chart(fig, use_container_width=True)
+            cogs_m = (
+                actuals_month.loc[actuals_month["Account"] == "COGS"]
+                .groupby("Month")["Amount"]
+                .sum()
+            )
+
+            trend_df = pd.DataFrame({"Revenue": rev_m, "COGS": cogs_m}).fillna(0).sort_index()
+            trend_df["GrossMargin"] = trend_df["Revenue"] + trend_df["COGS"]
+            trend_df["GrossMarginPct"] = trend_df.apply(
+                lambda r: (r["GrossMargin"] / r["Revenue"]) if r["Revenue"] != 0 else 0, axis=1
+            )
+            trend_df = trend_df.reset_index()
+
+            left, right = st.columns([2, 1])
+            with left:
+                fig_rev = px.line(trend_df, x="Month", y="Revenue", title="Revenue by Month")
+                fig_rev.update_yaxes(rangemode="tozero")
+                st.plotly_chart(fig_rev, use_container_width=True)
+
+            with right:
+                fig = px.line(trend_df, x="Month", y="GrossMarginPct", title="Gross Margin %")
+                fig.update_yaxes(tickformat=".0%", rangemode="tozero")
+                st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader("Budget vs Actual (Revenue)")
+        st.subheader("Variance")
 
-        budget_month = budget_view.copy()
-        budget_month["Month"] = budget_month["Date"].dt.to_period("M").dt.to_timestamp()
+        if has_revenue:
+            st.markdown("**Budget vs Actual (Revenue)**")
+            budget_month = budget_view.copy()
+            budget_month["Month"] = budget_month["Date"].dt.to_period("M").dt.to_timestamp()
 
-        act_rev = (
-            actuals_month.loc[actuals_month["Account"] == "Revenue"]
-            .groupby("Month")["Amount"]
-            .sum()
-        )
-        bud_rev = (
-            budget_month.loc[budget_month["Account"] == "Revenue"]
-            .groupby("Month")["Amount"]
-            .sum()
-        )
+            actuals_month = actuals_view.copy()
+            actuals_month["Month"] = actuals_month["Date"].dt.to_period("M").dt.to_timestamp()
 
-        bva = pd.DataFrame({"Actual": act_rev, "Budget": bud_rev}).fillna(0).reset_index()
-        st.plotly_chart(
-            px.bar(bva, x="Month", y=["Actual", "Budget"], barmode="group"),
-            use_container_width=True,
-        )
+            act_rev = (
+                actuals_month.loc[actuals_month["Account"] == "Revenue"]
+                .groupby("Month")["Amount"]
+                .sum()
+            )
+            bud_rev = (
+                budget_month.loc[budget_month["Account"] == "Revenue"]
+                .groupby("Month")["Amount"]
+                .sum()
+            )
 
-        st.subheader("Net Income Variance (Selected Month)")
+            bva = pd.DataFrame({"Actual": act_rev, "Budget": bud_rev}).fillna(0).reset_index()
+            fig_bva = px.bar(bva, x="Month", y=["Actual", "Budget"], barmode="group", title="Revenue: Budget vs Actual")
+            fig_bva.update_yaxes(rangemode="tozero")
+            st.plotly_chart(fig_bva, use_container_width=True)
+        else:
+            st.info("Revenue variance is not applicable for this selection.")
 
+        st.markdown("**Net Income Variance (Selected Month)**")
         month_options = actuals_view["Date"].dt.to_period("M").astype(str).sort_values().unique()
         wf_month = None
+
         if len(month_options) == 0:
             st.warning("No data available for the selected filters.")
         else:
@@ -342,7 +361,6 @@ try:
     with tab3:
         st.subheader("Export")
 
-        # --- Excel export ---
         buffer_xlsx = io.BytesIO()
         with pd.ExcelWriter(buffer_xlsx, engine="openpyxl") as writer:
             actuals_view.to_excel(writer, index=False, sheet_name="Actuals_Filtered")
@@ -355,7 +373,6 @@ try:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        # --- PDF export (reportlab) ---
         kpi_rows_for_pdf = [
             ("Revenue", f"${act_revenue:,.0f}", f"${d_revenue:,.0f}"),
             ("Gross Margin", f"${act_gross_margin:,.0f}", f"${d_gm:,.0f}"),
